@@ -1,4 +1,4 @@
-# docs2context
+# docs2context COMING SOON
 
 docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration.
 
