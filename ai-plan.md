@@ -1,14 +1,14 @@
-# WebScribe: Documentation Aggregator
+# docs2context: Documentation Aggregator
 
 ## Project Goal
-WebScribe is a CLI tool that automates documentation scraping and aggregation. Users can input a project name, and WebScribe will search for documentation, verify the correct project with the user, then scrape and compile all documentation into a single comprehensive markdown file.
+docs2context is a CLI tool that automates documentation scraping and aggregation. Users can input a project name, and docs2context will search for documentation, verify the correct project with the user, then scrape and compile all documentation into a single comprehensive markdown file.
 
 ## Implementation Plan
 
 ### 1. CLI Setup and Package Structure
 - Create a JavaScript npm package with CLI functionality
 - Support direct URL input or search-based operation
-- Implement command structure: `webscribe add <project-name>` or `webscribe add --url <documentation-url>`
+- Implement command structure: `docs2context add <project-name>` or `docs2context add --url <documentation-url>`
 - Set up proper package.json, bin entry point, and dependencies
 
 ### 2. Search Capability

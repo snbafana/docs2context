@@ -1,91 +1,154 @@
 import axios from 'axios';
-import * as cheerio from 'cheerio';
 
 /**
- * Search for documentation for a given project
+ * Search for documentation for a given project using DuckDuckGo API
  * @param {string} projectName - Name of the project to search for
  * @returns {Promise<Array<{title: string, url: string}>>} - Search results
  */
 export async function searchForDocumentation(projectName) {
   try {
-    // Note: In a real implementation, this would use a proper search API
-    // This is a simplified example using a search query
     const searchQuery = `${projectName} documentation`;
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`;
     
-    // This is a simplified implementation
-    // In reality, we would need to handle Google's anti-scraping measures
-    // or use a proper search API like Bing, DuckDuckGo, or a paid service
-    const response = await axios.get(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    // DuckDuckGo search API endpoint
+    const response = await axios.get('https://api.duckduckgo.com/', {
+      params: {
+        q: searchQuery,
+        format: 'json',
+        no_html: 1,
+        skip_disambig: 1
       }
     });
     
-    const $ = cheerio.load(response.data);
     const results = [];
     
-    // This selector would need to be updated based on Google's current HTML structure
-    // In reality, we should use a more reliable search API
-    $('a').each((i, element) => {
-      const href = $(element).attr('href');
-      if (href && href.startsWith('http') && !href.includes('google.com')) {
-        const title = $(element).text() || href;
-        // Filter to likely documentation sites
-        if (
-          href.includes('docs.') || 
-          href.includes('/docs') || 
-          href.includes('/documentation') ||
-          href.includes('developer.') ||
-          href.includes('/api') ||
-          title.toLowerCase().includes('documentation')
-        ) {
+    // Extract results from DuckDuckGo response
+    if (response.data.Results && response.data.Results.length > 0) {
+      response.data.Results.forEach(result => {
+        results.push({
+          title: result.Text,
+          url: result.FirstURL
+        });
+      });
+    }
+    
+    // Also check the related topics for more results
+    if (response.data.RelatedTopics && response.data.RelatedTopics.length > 0) {
+      response.data.RelatedTopics.forEach(topic => {
+        if (topic.FirstURL && topic.Text) {
           results.push({
-            title,
-            url: href
+            title: topic.Text,
+            url: topic.FirstURL
           });
         }
-      }
-    });
+      });
+    }
     
-    // Remove duplicates and limit to 5 results
+    // If DuckDuckGo API didn't return enough results, fallback to a HTTP request
+    if (results.length < 5) {
+      // Fallback using a different approach
+      const fallbackResults = await fallbackSearch(projectName);
+      results.push(...fallbackResults);
+    }
+    
+    // Return top 10 unique results
     const uniqueResults = Array.from(new Set(results.map(r => r.url)))
       .map(url => results.find(r => r.url === url))
-      .slice(0, 5);
+      .filter(r => r && isLikelyDocumentation(r.url, r.title))
+      .slice(0, 10);
     
     return uniqueResults;
   } catch (error) {
     console.error('Error searching for documentation:', error);
-    throw new Error('Failed to search for documentation');
+    // Fallback in case of error
+    return fallbackSearch(projectName);
   }
 }
 
 /**
- * Mock function for demonstration purposes
- * In a real implementation, this would be replaced with actual search logic
+ * Fallback search method that doesn't rely on the DuckDuckGo API
+ * @param {string} projectName - Name of the project to search for
+ * @returns {Promise<Array<{title: string, url: string}>>} - Search results
  */
-export async function mockSearchForDocumentation(projectName) {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 1500));
+async function fallbackSearch(projectName) {
+  try {
+    // Common documentation URLs patterns
+    const commonDocsPatterns = [
+      `https://docs.${projectName}.com`,
+      `https://docs.${projectName}.org`,
+      `https://docs.${projectName}.io`,
+      `https://${projectName}.dev/docs`,
+      `https://${projectName}.org/docs`,
+      `https://${projectName}.io/docs`,
+      `https://${projectName}.com/docs`,
+      `https://${projectName}.js.org`,
+      `https://developer.${projectName}.com`,
+      `https://${projectName}.readthedocs.io`
+    ];
+    
+    const results = [];
+    
+    // Check if each URL exists
+    const checkPromises = commonDocsPatterns.map(async url => {
+      try {
+        const response = await axios.head(url, { 
+          timeout: 2000,
+          validateStatus: status => status < 400
+        });
+        if (response.status < 400) {
+          results.push({
+            title: `${projectName} Documentation`,
+            url
+          });
+        }
+      } catch (error) {
+        // URL doesn't exist or is not accessible, ignore
+      }
+    });
+    
+    await Promise.all(checkPromises);
+    
+    return results;
+  } catch (error) {
+    console.error('Error in fallback search:', error);
+    return [];
+  }
+}
+
+/**
+ * Check if a URL is likely to be documentation
+ * @param {string} url - URL to check
+ * @param {string} title - Title of the page
+ * @returns {boolean} - Whether URL is likely documentation
+ */
+function isLikelyDocumentation(url, title) {
+  const lowerUrl = url.toLowerCase();
+  const lowerTitle = title.toLowerCase();
   
-  // Return mock results based on project name
-  const mockResults = {
-    'react': [
-      { title: 'React Documentation', url: 'https://reactjs.org/docs/getting-started.html' },
-      { title: 'React API Reference', url: 'https://reactjs.org/docs/react-api.html' },
-      { title: 'Create React App Documentation', url: 'https://create-react-app.dev/docs/getting-started' }
-    ],
-    'express': [
-      { title: 'Express - Node.js web application framework', url: 'https://expressjs.com/' },
-      { title: 'Express API Documentation', url: 'https://expressjs.com/en/4x/api.html' },
-      { title: 'Express Guide', url: 'https://expressjs.com/en/guide/routing.html' }
-    ],
-    'default': [
-      { title: `${projectName} Documentation`, url: `https://example.com/${projectName}/docs` },
-      { title: `${projectName} API Reference`, url: `https://example.com/${projectName}/api` },
-      { title: `${projectName} Getting Started`, url: `https://example.com/${projectName}/getting-started` }
-    ]
-  };
+  // URL patterns that suggest documentation
+  const docUrlPatterns = [
+    '/docs', 
+    '/documentation', 
+    '/api', 
+    '/guide',
+    '/manual',
+    '/reference',
+    '/tutorial',
+    'docs.',
+    'developer.'
+  ];
   
-  return mockResults[projectName.toLowerCase()] || mockResults.default;
+  // Title terms that suggest documentation
+  const docTitleTerms = [
+    'documentation',
+    'docs',
+    'guide',
+    'manual',
+    'api',
+    'reference',
+    'tutorial',
+    'getting started'
+  ];
+  
+  return docUrlPatterns.some(pattern => lowerUrl.includes(pattern)) ||
+         docTitleTerms.some(term => lowerTitle.includes(term));
 }

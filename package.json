@@ -1,14 +1,14 @@
 {
-  "name": "webscribe",
+  "name": "docs2context",
   "version": "0.1.0",
   "description": "CLI tool to scrape and aggregate documentation into a single markdown file",
   "main": "src/index.js",
   "bin": {
-    "webscribe": "./bin/webscribe.js"
+    "docs2context": "./bin/docs2context.js"
   },
   "type": "module",
   "scripts": {
-    "start": "node bin/webscribe.js",
+    "start": "node bin/docs2context.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

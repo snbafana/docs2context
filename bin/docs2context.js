@@ -6,7 +6,7 @@ import { addDocumentation } from '../src/index.js';
 const program = new Command();
 
 program
-  .name('webscribe')
+  .name('docs2context')
   .description('CLI tool to scrape and aggregate documentation into a single markdown file')
   .version('0.1.0');
 
