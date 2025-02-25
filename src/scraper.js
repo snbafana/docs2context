@@ -2,6 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { URL } from 'url';
+import OpenAI from 'openai';
 import { 
   logger, 
   logInfo, 
@@ -22,6 +23,73 @@ import {
 
 // Initialize markdown converter
 const nhm = new NodeHtmlMarkdown();
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/**
+ * Cleans and formats markdown content using OpenAI GPT-4o-mini
+ * @param {string} content - Raw markdown content to clean
+ * @param {string} title - Title of the page
+ * @param {string} url - URL of the page
+ * @returns {Promise<string>} - Cleaned and formatted markdown content
+ */
+async function cleanMarkdownWithAI(content, title, url) {
+  try {
+    // Create system message with instructions
+    const systemMessage = `You are a documentation formatter that specializes in cleaning up scraped web content. 
+Your task is to improve the quality and readability of scraped documentation.`;
+
+    // Create user message with content to clean
+    const userMessage = `
+I have scraped documentation content from a webpage and converted it to markdown. Please clean and format this content by:
+1. Removing any navigation elements, footers, or other non-documentation content
+2. Fixing any formatting issues or broken markdown syntax
+3. Ensuring proper heading hierarchy
+4. Making the content more readable and well-formatted
+5. Preserving all technical information and code examples
+6. Keeping only the essential documentation content
+
+The content is from: ${url}
+Title: ${title}
+
+Here's the content to clean:
+
+${content}
+
+Please return ONLY the cleaned markdown with no additional explanation or commentary. Maintain all technical accuracy.
+`;
+
+    // Send the request to OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemMessage },
+        { role: "user", content: userMessage }
+      ],
+      temperature: 0.7,
+      max_tokens: 4000,
+    });
+
+    // Extract and return the cleaned content
+    const cleanedContent = completion.choices[0].message.content;
+    
+    // If we got back an empty response or very short response, fall back to the original
+    if (!cleanedContent || cleanedContent.length < 100) {
+      logWarning(`AI cleaning returned too short content for ${url}, using original`);
+      return content;
+    }
+    
+    logSuccess(`Successfully cleaned content from ${url} using GPT-4o-mini`);
+    return cleanedContent;
+  } catch (error) {
+    // If there's any error with the AI, return the original content
+    logWarning(`Error cleaning content with GPT-4o-mini for ${url}: ${error.message}`);
+    return content;
+  }
+}
 
 /**
  * Scrape content from documentation URL and its linked pages
@@ -165,21 +233,59 @@ export async function scrapeContent(startUrl) {
   // Process pages in batches
   for (let i = 0; i < pagesToProcess.length; i += batchSize) {
     const batch = pagesToProcess.slice(i, i + batchSize);
-    const batchPromises = batch.map(url => scrapePageContent(url));
     
+    // Step 1: Scrape content from each page in the batch
+    const batchPromises = batch.map(url => scrapePageContent(url));
     const batchResults = await Promise.allSettled(batchPromises);
     
+    // Array to hold successfully scraped page content from this batch
+    const batchPages = [];
+    
+    // Process scraping results
     batchResults.forEach((result, index) => {
       pageCount++;
       spinner.text = `Scraping content... (${formatCount(pageCount)}/${pagesToProcess.length} pages)`;
       
       if (result.status === 'fulfilled' && result.value) {
-        pages.push(result.value);
+        batchPages.push(result.value);
         logSuccess(`Successfully scraped content from ${batch[index]}`);
       } else {
         logWarning(`Failed to scrape content from ${batch[index]}`);
       }
     });
+    
+    // Step 2: Clean each scraped page with AI
+    if (batchPages.length > 0) {
+      spinner.text = `Cleaning batch of ${batchPages.length} pages with GPT-4o-mini...`;
+      
+      // Process each page with AI in parallel
+      const cleaningPromises = batchPages.map(page => 
+        cleanMarkdownWithAI(page.content, page.title, page.url)
+          .then(cleanedContent => {
+            // Return a new object with cleaned content
+            return {
+              ...page,
+              content: cleanedContent
+            };
+          })
+      );
+      
+      // Wait for all AI cleaning to complete
+      const cleanedResults = await Promise.allSettled(cleaningPromises);
+      
+      // Process cleaning results
+      cleanedResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          // Add the cleaned page to the final pages array
+          pages.push(result.value);
+          logSuccess(`AI cleaned content for ${batchPages[index].url}`);
+        } else {
+          // If AI cleaning failed, add the original page
+          pages.push(batchPages[index]);
+          logWarning(`AI cleaning failed for ${batchPages[index].url}: ${result.reason}`);
+        }
+      });
+    }
   }
   
   if (pages.length === 0) {
@@ -385,10 +491,13 @@ export async function scrapeContent(startUrl) {
         return null;
       }
       
+      // Format initial content with title and source
+      const formattedContent = `# ${title}\n\nSource: ${url}\n\n${markdown}`;
+      
       return {
         url: url,
         title: title,
-        content: `# ${title}\n\nSource: ${url}\n\n${markdown}`
+        content: formattedContent
       };
     } catch (error) {
       // Just return null - we'll continue with other URLs
