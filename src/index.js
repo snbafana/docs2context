@@ -41,6 +41,7 @@ export async function addDocumentation(projectName, directUrl, options = {}) {
   try {
     // Display welcome header
     displayHeader();
+    console.log(directUrl)
     
     logInfo(`Starting documentation process for project: ${projectName}`);
     if (directUrl) {

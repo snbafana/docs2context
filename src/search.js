@@ -63,23 +63,6 @@ export async function searchForDocumentation(projectName) {
         }
       }
       
-      // Try searching for just the project name
-      spinner.text = `Trying general search for ${projectName}`;
-      const generalResults = await DDG.search(projectName, {
-        safeSearch: DDG.SafeSearchType.MODERATE
-      });
-      
-      if (generalResults && !generalResults.noResults && generalResults.results) {
-        logInfo(`Found ${generalResults.results.length} results from general search`);
-        
-        generalResults.results.forEach(result => {
-          results.push({
-            title: result.title,
-            url: result.url,
-            description: result.description || ''
-          });
-        });
-      }
     }
     
     // Return top 10 unique results
