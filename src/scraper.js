@@ -40,124 +40,114 @@ export async function scrapeContent(startUrl) {
   logInfo(`Using base URL: ${baseUrl}`);
   logInfo(`Using base domain: ${baseDomain}`);
   
-  // Multi-level crawling
+  // Create spinner for recursive crawling
   const crawler = createSpinner('Crawling website for documentation pages...');
   crawler.start();
   
-  // Set to track visited URLs to avoid duplicates
-  const allUrls = new Set();
-  allUrls.add(startUrl);
+  // Set to track all discovered URLs (both visited and to be visited)
+  const discoveredUrls = new Set();
+  // Set to track visited URLs
+  const visitedUrls = new Set();
+  // Queue of URLs to visit next
+  const urlQueue = [startUrl];
   
-  // Level 1: Get links from start URL
-  logInfo('Starting Level 1 crawl (base page)');
-  const level1Links = await extractLinksFromUrl(startUrl, baseDomain);
-  level1Links.forEach(url => allUrls.add(url));
+  // Add start URL to discovered set
+  discoveredUrls.add(startUrl);
   
-  crawler.text = `Found ${formatCount(level1Links.length)} links from base page`;
-  logInfo(`Level 1 crawl complete, found ${level1Links.length} links`);
+  // Counter for discovered docs pages
+  let docPagesCount = 0;
+  // Max depth for crawling
+  const maxDepth = 4;
+  // Map to track URL depth
+  const urlDepth = new Map();
+  urlDepth.set(startUrl, 1);
   
-  // Level 2: Get links from each of the level 1 pages
-  logInfo('Starting Level 2 crawl');
-  crawler.text = 'Crawling second level pages...';
-  
-  const level2Links = new Set();
-  let processedCount = 0;
-  
-  // Process in batches of 5 to avoid overwhelming the server
+  // Batch size for concurrent requests
   const batchSize = 5;
-  for (let i = 0; i < level1Links.length; i += batchSize) {
-    const batch = level1Links.slice(i, i + batchSize);
-    const batchPromises = batch.map(url => extractLinksFromUrl(url, baseDomain));
+  
+  // Loop until queue is empty
+  while (urlQueue.length > 0) {
+    // Get next batch of URLs to process
+    const currentBatch = urlQueue.splice(0, batchSize);
     
+    // Process batch in parallel
+    const batchPromises = currentBatch.map(url => {
+      // Mark as visited before processing to prevent duplicate processing
+      visitedUrls.add(url);
+      
+      // Get current depth
+      const depth = urlDepth.get(url) || 1;
+      
+      // Skip if we've reached max depth
+      if (depth > maxDepth) return Promise.resolve({ url, links: [] });
+      
+      // Update spinner
+      crawler.text = `Crawling level ${depth}... (${formatCount(visitedUrls.size)} visited, ${formatCount(discoveredUrls.size)} discovered)`;
+      
+      // Extract links from URL and make sure we always return an array
+      return extractLinksFromUrl(url, baseDomain)
+        .then(links => {
+          // Ensure links is an array
+          const linksArray = Array.isArray(links) ? links : [];
+          return { url, links: linksArray };
+        })
+        .catch(error => {
+          logWarning(`Failed to extract links from ${url}: ${error.message}`);
+          return { url, links: [] };
+        });
+    });
+    
+    // Wait for all requests to complete
     const batchResults = await Promise.allSettled(batchPromises);
     
-    batchResults.forEach((result, index) => {
-      processedCount++;
-      crawler.text = `Crawling second level... (${formatCount(processedCount)}/${level1Links.length} pages)`;
-      
+    // Process results and add new URLs to queue
+    for (const result of batchResults) {
       if (result.status === 'fulfilled') {
-        result.value.forEach(url => {
-          if (!allUrls.has(url)) {
-            level2Links.add(url);
-            allUrls.add(url);
+        const { url, links } = result.value;
+        
+        // Make sure links is always an array, even if it's somehow undefined or null
+        const linksArray = Array.isArray(links) ? links : [];
+        
+        const currentDepth = urlDepth.get(url) || 1;
+        const nextDepth = currentDepth + 1;
+        
+        // For each link found
+        for (const link of linksArray) {
+          // If we haven't discovered this URL yet
+          if (!discoveredUrls.has(link)) {
+            // Add to discovered set
+            discoveredUrls.add(link);
+            // Add to queue
+            urlQueue.push(link);
+            // Set depth
+            urlDepth.set(link, nextDepth);
+            
+            // If it's likely a documentation page, increment counter
+            if (isLikelyDocPage(link)) {
+              docPagesCount++;
+            }
           }
-        });
+        }
+      } else if (result.status === 'rejected') {
+        // Log any errors but continue with other URLs
+        logWarning(`A batch crawl operation failed: ${result.reason}`);
       }
-    });
+    }
+    
+    // Log progress
+    logInfo(`Crawl progress: ${visitedUrls.size} URLs visited, ${urlQueue.length} URLs in queue`);
   }
   
-  logInfo(`Level 2 crawl complete, found ${level2Links.size} new links`);
-  crawler.text = `Found ${formatCount(level2Links.size)} links from second level pages`;
+  // Log completion
+  crawler.succeed(`Recursive crawl complete. Visited ${formatCount(visitedUrls.size)} URLs, discovered ${formatCount(discoveredUrls.size)} URLs`);
+  logSuccess(`Found ${docPagesCount} likely documentation pages`);
   
-  // Level 3: Get links from each of the level 2 pages
-  logInfo('Starting Level 3 crawl');
-  crawler.text = 'Crawling third level pages...';
-  
-  const level3Links = new Set();
-  processedCount = 0;
-  
-  const level2Array = Array.from(level2Links);
-  for (let i = 0; i < level2Array.length; i += batchSize) {
-    const batch = level2Array.slice(i, i + batchSize);
-    const batchPromises = batch.map(url => extractLinksFromUrl(url, baseDomain));
-    
-    const batchResults = await Promise.allSettled(batchPromises);
-    
-    batchResults.forEach((result, index) => {
-      processedCount++;
-      crawler.text = `Crawling third level... (${formatCount(processedCount)}/${level2Links.size} pages)`;
-      
-      if (result.status === 'fulfilled') {
-        result.value.forEach(url => {
-          if (!allUrls.has(url)) {
-            level3Links.add(url);
-            allUrls.add(url);
-          }
-        });
-      }
-      // If there was a failure to extract links, just move on - nothing to do here
-    });
-  }
-  
-  logInfo(`Level 3 crawl complete, found ${level3Links.size} new links`);
-  
-  // Level 4: Get links from each of the level 3 pages
-  logInfo('Starting Level 4 crawl');
-  crawler.text = 'Crawling fourth level pages...';
-  
-  const level4Links = new Set();
-  processedCount = 0;
-  
-  const level3Array = Array.from(level3Links);
-  for (let i = 0; i < level3Array.length; i += batchSize) {
-    const batch = level3Array.slice(i, i + batchSize);
-    const batchPromises = batch.map(url => extractLinksFromUrl(url, baseDomain));
-    
-    const batchResults = await Promise.allSettled(batchPromises);
-    
-    batchResults.forEach((result, index) => {
-      processedCount++;
-      crawler.text = `Crawling fourth level... (${formatCount(processedCount)}/${level3Links.size} pages)`;
-      
-      if (result.status === 'fulfilled') {
-        result.value.forEach(url => {
-          if (!allUrls.has(url)) {
-            level4Links.add(url);
-            allUrls.add(url);
-          }
-        });
-      }
-      // If there was a failure to extract links, just move on
-    });
-  }
-  
-  logInfo(`Level 4 crawl complete, found ${level4Links.size} new links`);
-  
-  // Combine all unique URLs
-  const allUrlsArray = Array.from(allUrls);
+  // Get all URLs we've discovered
+  const allUrlsArray = Array.from(discoveredUrls);
+  const uniqueUrlsArray = [...new Set(allUrlsArray)];
   
   // Filter URLs to only include likely documentation pages
-  const docUrls = allUrlsArray.filter(url => isLikelyDocPage(url));
+  const docUrls = uniqueUrlsArray.filter(url => isLikelyDocPage(url));
   
   crawler.succeed(`Found ${formatCount(docUrls.length)} documentation pages across 4 levels`);
   logSuccess(`Discovered ${docUrls.length} documentation pages through crawling`);
@@ -166,7 +156,7 @@ export async function scrapeContent(startUrl) {
   const spinner = createSpinner('Scraping documentation content...');
   spinner.start();
   
-  const maxPages = 200; // Limit to 200 pages for safety
+  const maxPages = 500; // Limit to 500 pages for safety
   const pagesToProcess = docUrls.slice(0, maxPages);
   
   const pages = [];
@@ -322,12 +312,30 @@ export async function scrapeContent(startUrl) {
    */
   async function scrapePageContent(url) {
     try {
+      // Skip URLs that are likely to be binary files or assets
+      if (url.match(/\.(pdf|zip|jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i)) {
+        return null;
+      }
+      
       const response = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         },
-        timeout: 10000 // 10 second timeout
+        timeout: 15000, // Increased timeout to 15 seconds
+        validateStatus: function (status) {
+          return status < 400; // Only consider responses with status code < 400 as successful
+        }
       });
+      
+      // If we got here, the response was successful
+      const contentType = response.headers['content-type'] || '';
+      
+      // Skip binary content
+      if (!contentType.includes('text/html') && 
+          !contentType.includes('application/xhtml+xml') && 
+          !contentType.includes('text/plain')) {
+        return null;
+      }
       
       const $ = cheerio.load(response.data);
       const title = $('title').text().trim() || url;
@@ -344,6 +352,10 @@ export async function scrapeContent(startUrl) {
         '#content',
         '.docs-content',
         '.docs',
+        '.document',
+        '.doc-content',
+        '.readme',
+        '.page-content',
         'body'
       ];
       
@@ -361,8 +373,17 @@ export async function scrapeContent(startUrl) {
         return null;
       }
       
+      // Clean up the content before converting to markdown
+      // Remove script and style tags
+      $('script, style, noscript, iframe, svg').remove();
+      
       // Convert HTML to Markdown
       const markdown = nhm.translate(mainContent);
+      
+      // Skip pages with very little content (likely not documentation)
+      if (markdown.length < 100) {
+        return null;
+      }
       
       return {
         url: url,
@@ -370,41 +391,19 @@ export async function scrapeContent(startUrl) {
         content: `# ${title}\n\nSource: ${url}\n\n${markdown}`
       };
     } catch (error) {
+      // Just return null - we'll continue with other URLs
       return null;
     }
   }
 }
-
 /**
  * Determine if a URL is likely to be a documentation page
  * @param {string} url - URL to check
  * @returns {boolean} - Whether URL is likely a documentation page
  */
 function isLikelyDocPage(url) {
-  const docPatterns = [
-    '/docs/',
-    '/documentation/',
-    '/guide/',
-    '/tutorial/',
-    '/reference/',
-    '/api/',
-    '/manual/',
-    '/learn/',
-    '/examples/',
-    '/getting-started',
-    '/quickstart',
-    '/introduction',
-    '/overview',
-    '/handbook',
-    '/concepts',
-    '/usage',
-    '/faq'
-  ];
-  
   // Exclude patterns that are likely not documentation pages
   const excludePatterns = [
-    '/blog/',
-    '/news/',
     '/download/',
     '/releases/',
     '/changelog/',
@@ -420,12 +419,11 @@ function isLikelyDocPage(url) {
     '/privacy/'
   ];
   
+  // If URL contains any exclude pattern, it's not a doc page
   if (excludePatterns.some(pattern => url.includes(pattern))) {
     return false;
   }
   
-  return docPatterns.some(pattern => url.includes(pattern)) ||
-         url.endsWith('.html') || 
-         url.endsWith('.md') ||
-         !url.includes('.');
+  // Otherwise, consider it a documentation page
+  return true;
 }
