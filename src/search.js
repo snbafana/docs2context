@@ -22,7 +22,7 @@ export async function searchForDocumentation(projectName) {
   
   try {
     spinner.start();
-    const searchQuery = `${projectName} documentation`;
+    const searchQuery = `${projectName} docs`;
     
     logInfo(`Searching for "${searchQuery}" using duck-duck-scrape`);
     
@@ -35,7 +35,7 @@ export async function searchForDocumentation(projectName) {
     
     if (searchResults && !searchResults.noResults && searchResults.results) {
       logInfo(`Found ${searchResults.results.length} results from DuckDuckGo`);
-      
+
       // Process the results
       searchResults.results.forEach(result => {
         results.push({
@@ -62,29 +62,6 @@ export async function searchForDocumentation(projectName) {
           }
         }
       }
-      
-      // Try to get dictionary definition if it's a technology term
-      try {
-        spinner.text = `Checking if ${projectName} has dictionary entries`;
-        const definitionResult = await DDG.dictionaryDefinition(projectName);
-        
-        if (definitionResult && definitionResult.length > 0) {
-          logInfo(`Found dictionary definition for ${projectName}`);
-          
-          // Add the first dictionary definition as a result
-          const definition = definitionResult[0];
-          results.push({
-            title: `${projectName} - Definition`,
-            url: definition.url || `https://duckduckgo.com/?q=define+${encodeURIComponent(projectName)}`,
-            description: definition.definition || ''
-          });
-        }
-      } catch (dictError) {
-        // Dictionary lookup failed, just continue
-        logInfo(`No dictionary definition found for ${projectName}`);
-      }
-    } else {
-      logWarning('No results returned from DuckDuckGo search');
       
       // Try searching for just the project name
       spinner.text = `Trying general search for ${projectName}`;
