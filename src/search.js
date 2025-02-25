@@ -1,4 +1,16 @@
 import axios from 'axios';
+import { 
+  logger, 
+  logInfo, 
+  logSuccess, 
+  logWarning, 
+  logError
+} from './logger.js';
+import {
+  createSpinner,
+  formatUrl,
+  formatCount
+} from './ui.js';
 
 /**
  * Search for documentation for a given project using DuckDuckGo API
@@ -6,8 +18,13 @@ import axios from 'axios';
  * @returns {Promise<Array<{title: string, url: string}>>} - Search results
  */
 export async function searchForDocumentation(projectName) {
+  const spinner = createSpinner(`Searching for ${projectName} documentation`);
+  
   try {
+    spinner.start();
     const searchQuery = `${projectName} documentation`;
+    
+    logInfo(`Searching for "${searchQuery}" using DuckDuckGo API`);
     
     // DuckDuckGo search API endpoint
     const response = await axios.get('https://api.duckduckgo.com/', {
@@ -23,6 +40,7 @@ export async function searchForDocumentation(projectName) {
     
     // Extract results from DuckDuckGo response
     if (response.data.Results && response.data.Results.length > 0) {
+      logInfo(`Found ${response.data.Results.length} direct results from DuckDuckGo`);
       response.data.Results.forEach(result => {
         results.push({
           title: result.Text,
@@ -33,6 +51,7 @@ export async function searchForDocumentation(projectName) {
     
     // Also check the related topics for more results
     if (response.data.RelatedTopics && response.data.RelatedTopics.length > 0) {
+      logInfo(`Found ${response.data.RelatedTopics.length} related topics from DuckDuckGo`);
       response.data.RelatedTopics.forEach(topic => {
         if (topic.FirstURL && topic.Text) {
           results.push({
@@ -45,6 +64,9 @@ export async function searchForDocumentation(projectName) {
     
     // If DuckDuckGo API didn't return enough results, fallback to a HTTP request
     if (results.length < 5) {
+      logInfo(`Not enough results (${results.length}), trying fallback search method`);
+      spinner.text = 'Not enough results, trying fallback search...';
+      
       // Fallback using a different approach
       const fallbackResults = await fallbackSearch(projectName);
       results.push(...fallbackResults);
@@ -56,10 +78,26 @@ export async function searchForDocumentation(projectName) {
       .filter(r => r && isLikelyDocumentation(r.url, r.title))
       .slice(0, 10);
     
+    if (uniqueResults.length > 0) {
+      spinner.succeed(`Found ${formatCount(uniqueResults.length)} documentation resources for ${projectName}`);
+      logSuccess(`Search found ${uniqueResults.length} potential documentation resources`);
+      
+      // Log all found URLs for debugging
+      uniqueResults.forEach((result, index) => {
+        logInfo(`Result ${index + 1}: ${result.title} - ${result.url}`);
+      });
+    } else {
+      spinner.warn(`No documentation found for ${projectName}`);
+      logWarning(`No documentation found for ${projectName}`);
+    }
+    
     return uniqueResults;
   } catch (error) {
-    console.error('Error searching for documentation:', error);
+    spinner.fail(`Search failed for ${projectName}`);
+    logError('Error searching for documentation', error);
+    
     // Fallback in case of error
+    logInfo('Attempting fallback search after error');
     return fallbackSearch(projectName);
   }
 }
@@ -70,6 +108,9 @@ export async function searchForDocumentation(projectName) {
  * @returns {Promise<Array<{title: string, url: string}>>} - Search results
  */
 async function fallbackSearch(projectName) {
+  const spinner = createSpinner('Trying common documentation URL patterns');
+  spinner.start();
+  
   try {
     // Common documentation URLs patterns
     const commonDocsPatterns = [
@@ -85,16 +126,19 @@ async function fallbackSearch(projectName) {
       `https://${projectName}.readthedocs.io`
     ];
     
+    logInfo(`Checking ${commonDocsPatterns.length} common documentation URL patterns`);
     const results = [];
     
     // Check if each URL exists
     const checkPromises = commonDocsPatterns.map(async url => {
       try {
+        spinner.text = `Checking ${formatUrl(url)}`;
         const response = await axios.head(url, { 
           timeout: 2000,
           validateStatus: status => status < 400
         });
         if (response.status < 400) {
+          logInfo(`Found valid documentation URL: ${url}`);
           results.push({
             title: `${projectName} Documentation`,
             url
@@ -107,9 +151,18 @@ async function fallbackSearch(projectName) {
     
     await Promise.all(checkPromises);
     
+    if (results.length > 0) {
+      spinner.succeed(`Found ${formatCount(results.length)} documentation URLs through fallback search`);
+      logSuccess(`Fallback search found ${results.length} documentation URLs`);
+    } else {
+      spinner.warn('No documentation found through fallback search');
+      logWarning('No documentation found through fallback search');
+    }
+    
     return results;
   } catch (error) {
-    console.error('Error in fallback search:', error);
+    spinner.fail('Fallback search failed');
+    logError('Error in fallback search', error);
     return [];
   }
 }

@@ -2,6 +2,8 @@
 
 import { Command } from 'commander';
 import { addDocumentation } from '../src/index.js';
+import { displayHeader } from '../src/ui.js';
+import chalk from 'chalk';
 
 const program = new Command();
 
@@ -15,13 +17,30 @@ program
   .description('Add documentation for a project')
   .argument('<project>', 'Project name to search for documentation')
   .option('-u, --url <url>', 'Direct URL to documentation')
+  .option('-o, --output <path>', 'Output file path')
+  .option('-v, --verbose', 'Enable verbose logging')
   .action((project, options) => {
+    // Set logging level if verbose flag is provided
+    if (options.verbose) {
+      process.env.LOG_LEVEL = 'debug';
+    }
+    
     addDocumentation(project, options.url);
+  });
+
+// Add more commands as needed
+program
+  .command('version')
+  .description('Display the current version')
+  .action(() => {
+    displayHeader();
+    console.log(chalk.cyan(`Version: ${program.version()}`));
   });
 
 program.parse(process.argv);
 
-// Show help if no arguments provided
+// Show help with nice formatting if no arguments provided
 if (!process.argv.slice(2).length) {
+  displayHeader();
   program.outputHelp();
 }
