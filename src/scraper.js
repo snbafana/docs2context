@@ -151,7 +151,7 @@ export async function scrapeContent(startUrl, options = {}) {
   // Batch size for progress updates
   const progressUpdateSize = 20;
   let processedCount = 0;
-  let lastProgressUpdate = 0;
+  let crawlProgressUpdate = 0;
   
   // Extract links from a URL and add them to the queue
   async function processUrl(url) {
@@ -167,9 +167,9 @@ export async function scrapeContent(startUrl, options = {}) {
       
       // Update spinner occasionally (not on every URL to reduce overhead)
       processedCount++;
-      if (processedCount - lastProgressUpdate >= progressUpdateSize) {
+      if (processedCount - crawlProgressUpdate >= progressUpdateSize) {
         crawler.text = `Crawling level ${depth}... (${formatCount(visitedUrls.size)} visited, ${formatCount(discoveredUrls.size)} discovered)`;
-        lastProgressUpdate = processedCount;
+        crawlProgressUpdate = processedCount;
       }
       
       // Extract links from URL
@@ -230,8 +230,8 @@ export async function scrapeContent(startUrl, options = {}) {
   const pagesToProcess = docUrls.slice(0, maxPages);
   
   const pages = [];
-  pageCount = 0;
-  lastProgressUpdate = 0;
+  let pageCount = 0;
+  let scrapeProgressUpdate = 0;
   
   // Create a scraping task for each URL
   const scrapingTasks = pagesToProcess.map(url => async () => {
@@ -240,9 +240,9 @@ export async function scrapeContent(startUrl, options = {}) {
       pageCount++;
       
       // Update spinner occasionally
-      if (pageCount - lastProgressUpdate >= progressUpdateSize) {
+      if (pageCount - scrapeProgressUpdate >= progressUpdateSize) {
         spinner.text = `Scraping content... (${formatCount(pageCount)}/${pagesToProcess.length} pages)`;
-        lastProgressUpdate = pageCount;
+        scrapeProgressUpdate = pageCount;
       }
       
       if (content) {
@@ -277,19 +277,19 @@ export async function scrapeContent(startUrl, options = {}) {
     spinner.text = 'Cleaning content with GPT-4o-mini...';
     spinner.start();
     
-    pageCount = 0;
-    lastProgressUpdate = 0;
+    let aiPageCount = 0;
+    let aiScrapeProgressUpdate = 0;
     
     // Create cleaning tasks
     const cleaningTasks = validPages.map(page => async () => {
       try {
         const cleanedContent = await cleanMarkdownWithAI(page.content, page.title, page.url);
-        pageCount++;
+        aiPageCount++;
         
         // Update spinner occasionally
-        if (pageCount - lastProgressUpdate >= progressUpdateSize) {
-          spinner.text = `Cleaning content with GPT-4o-mini... (${formatCount(pageCount)}/${validPages.length} pages)`;
-          lastProgressUpdate = pageCount;
+        if (aiPageCount - aiScrapeProgressUpdate >= progressUpdateSize) {
+          spinner.text = `Cleaning content with GPT-4o-mini... (${formatCount(aiPageCount)}/${validPages.length} pages)`;
+          aiScrapeProgressUpdate = aiPageCount;
         }
         
         logSuccess(`AI cleaned content for ${page.url}`);

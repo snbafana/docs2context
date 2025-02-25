@@ -19,7 +19,7 @@ program
   .option('-u, --url <url>', 'Direct URL to documentation')
   .option('-o, --output <path>', 'Output file path')
   .option('-v, --verbose', 'Enable verbose logging')
-  .option('--disable-ai', 'Disable AI cleaning of content')
+  .option('--disable-ai', 'Disable AI cleaning of content', false)
   .option('-c, --concurrency <number>', 'Number of concurrent operations', '10')
   .action((project, options) => {
     // Set logging level if verbose flag is provided
@@ -29,7 +29,7 @@ program
     
     // Parse options for the scraper
     const scraperOptions = {
-      disableAI: options.disableAi || false,
+      disableAI: options.disableAi === true,
       concurrency: parseInt(options.concurrency, 10) || 10
     };
     
