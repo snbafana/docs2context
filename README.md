@@ -1,6 +1,8 @@
 # docs2context COMING SOON
 
-docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration. **This tool is perfect for pair programming with an AI**
+docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration.
+
+**Simply put, call docs2context on a particular package, select the correct link from a list of options, and get back a large document primed for ingestion into an AI for pair programming**
 
 ## Installation
 
