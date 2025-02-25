@@ -1,5 +1,6 @@
 # Dependency directories
 node_modules/
+prompt_context
 
 # Output files
 *-docs.md
