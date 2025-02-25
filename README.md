@@ -1,6 +1,6 @@
 # docs2context
 
-docs2context is a powerful CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration.
+docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration.
 
 ## Installation
 
@@ -16,6 +16,8 @@ export OPENAI_API_KEY=your_api_key
 ```
 
 ## Usage
+
+(express as an example, replace with any package/library)
 
 ```bash
 # Search for documentation by project name
