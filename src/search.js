@@ -1,4 +1,4 @@
-import axios from 'axios';
+import * as DDG from 'duck-duck-scrape';
 import { 
   logger, 
   logInfo, 
@@ -13,7 +13,7 @@ import {
 } from './ui.js';
 
 /**
- * Search for documentation for a given project using DuckDuckGo API
+ * Search for documentation for a given project using DuckDuckGo Scrape
  * @param {string} projectName - Name of the project to search for
  * @returns {Promise<Array<{title: string, url: string}>>} - Search results
  */
@@ -24,52 +24,85 @@ export async function searchForDocumentation(projectName) {
     spinner.start();
     const searchQuery = `${projectName} documentation`;
     
-    logInfo(`Searching for "${searchQuery}" using DuckDuckGo API`);
+    logInfo(`Searching for "${searchQuery}" using duck-duck-scrape`);
     
-    // DuckDuckGo search API endpoint
-    const response = await axios.get('https://api.duckduckgo.com/', {
-      params: {
-        q: searchQuery,
-        format: 'json',
-        no_html: 1,
-        skip_disambig: 1
-      }
+    // Use duck-duck-scrape to search
+    const searchResults = await DDG.search(searchQuery, {
+      safeSearch: DDG.SafeSearchType.MODERATE
     });
     
     const results = [];
     
-    // Extract results from DuckDuckGo response
-    if (response.data.Results && response.data.Results.length > 0) {
-      logInfo(`Found ${response.data.Results.length} direct results from DuckDuckGo`);
-      response.data.Results.forEach(result => {
+    if (searchResults && !searchResults.noResults && searchResults.results) {
+      logInfo(`Found ${searchResults.results.length} results from DuckDuckGo`);
+      
+      // Process the results
+      searchResults.results.forEach(result => {
         results.push({
-          title: result.Text,
-          url: result.FirstURL
+          title: result.title,
+          url: result.url,
+          description: result.description || ''
         });
       });
-    }
-    
-    // Also check the related topics for more results
-    if (response.data.RelatedTopics && response.data.RelatedTopics.length > 0) {
-      logInfo(`Found ${response.data.RelatedTopics.length} related topics from DuckDuckGo`);
-      response.data.RelatedTopics.forEach(topic => {
-        if (topic.FirstURL && topic.Text) {
+      
+      // If there's a "bang" suggestion in the results, use it too
+      if (searchResults.results.some(r => r.bang)) {
+        const bangSuggestion = searchResults.results.find(r => r.bang);
+        
+        if (bangSuggestion && bangSuggestion.bang.domain) {
+          logInfo(`Found bang suggestion for ${bangSuggestion.bang.title} (${bangSuggestion.bang.domain})`);
+          
+          // Add the specific documentation site suggested by DuckDuckGo bangs
+          if (!results.some(r => r.url === bangSuggestion.url)) {
+            results.push({
+              title: bangSuggestion.bang.title,
+              url: bangSuggestion.url,
+              description: `Official documentation via DuckDuckGo bang (${bangSuggestion.bang.prefix})`
+            });
+          }
+        }
+      }
+      
+      // Try to get dictionary definition if it's a technology term
+      try {
+        spinner.text = `Checking if ${projectName} has dictionary entries`;
+        const definitionResult = await DDG.dictionaryDefinition(projectName);
+        
+        if (definitionResult && definitionResult.length > 0) {
+          logInfo(`Found dictionary definition for ${projectName}`);
+          
+          // Add the first dictionary definition as a result
+          const definition = definitionResult[0];
           results.push({
-            title: topic.Text,
-            url: topic.FirstURL
+            title: `${projectName} - Definition`,
+            url: definition.url || `https://duckduckgo.com/?q=define+${encodeURIComponent(projectName)}`,
+            description: definition.definition || ''
           });
         }
-      });
-    }
-    
-    // If DuckDuckGo API didn't return enough results, fallback to a HTTP request
-    if (results.length < 5) {
-      logInfo(`Not enough results (${results.length}), trying fallback search method`);
-      spinner.text = 'Not enough results, trying fallback search...';
+      } catch (dictError) {
+        // Dictionary lookup failed, just continue
+        logInfo(`No dictionary definition found for ${projectName}`);
+      }
+    } else {
+      logWarning('No results returned from DuckDuckGo search');
       
-      // Fallback using a different approach
-      const fallbackResults = await fallbackSearch(projectName);
-      results.push(...fallbackResults);
+      // Try searching for just the project name
+      spinner.text = `Trying general search for ${projectName}`;
+      const generalResults = await DDG.search(projectName, {
+        safeSearch: DDG.SafeSearchType.MODERATE
+      });
+      
+      if (generalResults && !generalResults.noResults && generalResults.results) {
+        logInfo(`Found ${generalResults.results.length} results from general search`);
+        
+        generalResults.results.forEach(result => {
+          results.push({
+            title: result.title,
+            url: result.url,
+            description: result.description || ''
+          });
+        });
+      }
     }
     
     // Return top 10 unique results
@@ -95,77 +128,10 @@ export async function searchForDocumentation(projectName) {
   } catch (error) {
     spinner.fail(`Search failed for ${projectName}`);
     logError('Error searching for documentation', error);
-    
-    // Fallback in case of error
-    logInfo('Attempting fallback search after error');
-    return fallbackSearch(projectName);
-  }
-}
-
-/**
- * Fallback search method that doesn't rely on the DuckDuckGo API
- * @param {string} projectName - Name of the project to search for
- * @returns {Promise<Array<{title: string, url: string}>>} - Search results
- */
-async function fallbackSearch(projectName) {
-  const spinner = createSpinner('Trying common documentation URL patterns');
-  spinner.start();
-  
-  try {
-    // Common documentation URLs patterns
-    const commonDocsPatterns = [
-      `https://docs.${projectName}.com`,
-      `https://docs.${projectName}.org`,
-      `https://docs.${projectName}.io`,
-      `https://${projectName}.dev/docs`,
-      `https://${projectName}.org/docs`,
-      `https://${projectName}.io/docs`,
-      `https://${projectName}.com/docs`,
-      `https://${projectName}.js.org`,
-      `https://developer.${projectName}.com`,
-      `https://${projectName}.readthedocs.io`
-    ];
-    
-    logInfo(`Checking ${commonDocsPatterns.length} common documentation URL patterns`);
-    const results = [];
-    
-    // Check if each URL exists
-    const checkPromises = commonDocsPatterns.map(async url => {
-      try {
-        spinner.text = `Checking ${formatUrl(url)}`;
-        const response = await axios.head(url, { 
-          timeout: 2000,
-          validateStatus: status => status < 400
-        });
-        if (response.status < 400) {
-          logInfo(`Found valid documentation URL: ${url}`);
-          results.push({
-            title: `${projectName} Documentation`,
-            url
-          });
-        }
-      } catch (error) {
-        // URL doesn't exist or is not accessible, ignore
-      }
-    });
-    
-    await Promise.all(checkPromises);
-    
-    if (results.length > 0) {
-      spinner.succeed(`Found ${formatCount(results.length)} documentation URLs through fallback search`);
-      logSuccess(`Fallback search found ${results.length} documentation URLs`);
-    } else {
-      spinner.warn('No documentation found through fallback search');
-      logWarning('No documentation found through fallback search');
-    }
-    
-    return results;
-  } catch (error) {
-    spinner.fail('Fallback search failed');
-    logError('Error in fallback search', error);
     return [];
   }
 }
+
 
 /**
  * Check if a URL is likely to be documentation
