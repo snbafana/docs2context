@@ -19,13 +19,21 @@ program
   .option('-u, --url <url>', 'Direct URL to documentation')
   .option('-o, --output <path>', 'Output file path')
   .option('-v, --verbose', 'Enable verbose logging')
+  .option('--disable-ai', 'Disable AI cleaning of content')
+  .option('-c, --concurrency <number>', 'Number of concurrent operations', '10')
   .action((project, options) => {
     // Set logging level if verbose flag is provided
     if (options.verbose) {
       process.env.LOG_LEVEL = 'debug';
     }
     
-    addDocumentation(project, options.url);
+    // Parse options for the scraper
+    const scraperOptions = {
+      disableAI: options.disableAi || false,
+      concurrency: parseInt(options.concurrency, 10) || 10
+    };
+    
+    addDocumentation(project, options.url, scraperOptions);
   });
 
 // Add more commands as needed

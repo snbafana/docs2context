@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { URL } from 'url';
 import OpenAI from 'openai';
+import PQueue from 'p-queue'; // Import p-queue for better concurrency control
 import { 
   logger, 
   logInfo, 
@@ -94,19 +95,36 @@ Please return ONLY the cleaned markdown with no additional explanation or commen
 /**
  * Scrape content from documentation URL and its linked pages
  * @param {string} startUrl - URL to start scraping from
+ * @param {Object} options - Scraping options
+ * @param {boolean} options.disableAI - Whether to disable AI cleaning
+ * @param {number} options.concurrency - Number of concurrent operations
  * @returns {Promise<string>} - Combined markdown content
  */
-export async function scrapeContent(startUrl) {
+export async function scrapeContent(startUrl, options = {}) {
+  // Set default options
+  const {
+    disableAI = false,
+    concurrency = 10
+  } = options;
+  
   const baseUrl = new URL(startUrl).origin;
   const baseDomain = new URL(startUrl).hostname;
   
   displayInfo(`Starting documentation scrape from ${formatUrl(startUrl)}`);
   displayInfo(`Base URL: ${formatUrl(baseUrl)}`);
   displayInfo(`Base Domain: ${baseDomain}`);
+  if (disableAI) {
+    displayInfo(`AI cleaning is disabled`);
+  }
   
   logInfo(`Starting documentation scrape from ${startUrl}`);
   logInfo(`Using base URL: ${baseUrl}`);
   logInfo(`Using base domain: ${baseDomain}`);
+  
+  // Create queue for concurrent operations
+  const crawlQueue = new PQueue({ concurrency });
+  const scrapeQueue = new PQueue({ concurrency });
+  const aiQueue = new PQueue({ concurrency: Math.min(5, concurrency) }); // Limit AI concurrency to avoid rate limits
   
   // Create spinner for recursive crawling
   const crawler = createSpinner('Crawling website for documentation pages...');
@@ -130,81 +148,66 @@ export async function scrapeContent(startUrl) {
   const urlDepth = new Map();
   urlDepth.set(startUrl, 1);
   
-  // Batch size for concurrent requests
-  const batchSize = 5;
+  // Batch size for progress updates
+  const progressUpdateSize = 20;
+  let processedCount = 0;
+  let lastProgressUpdate = 0;
   
-  // Loop until queue is empty
-  while (urlQueue.length > 0) {
-    // Get next batch of URLs to process
-    const currentBatch = urlQueue.splice(0, batchSize);
-    
-    // Process batch in parallel
-    const batchPromises = currentBatch.map(url => {
-      // Mark as visited before processing to prevent duplicate processing
+  // Extract links from a URL and add them to the queue
+  async function processUrl(url) {
+    try {
+      // Mark as visited before processing
       visitedUrls.add(url);
       
       // Get current depth
       const depth = urlDepth.get(url) || 1;
       
       // Skip if we've reached max depth
-      if (depth > maxDepth) return Promise.resolve({ url, links: [] });
+      if (depth > maxDepth) return;
       
-      // Update spinner
-      crawler.text = `Crawling level ${depth}... (${formatCount(visitedUrls.size)} visited, ${formatCount(discoveredUrls.size)} discovered)`;
+      // Update spinner occasionally (not on every URL to reduce overhead)
+      processedCount++;
+      if (processedCount - lastProgressUpdate >= progressUpdateSize) {
+        crawler.text = `Crawling level ${depth}... (${formatCount(visitedUrls.size)} visited, ${formatCount(discoveredUrls.size)} discovered)`;
+        lastProgressUpdate = processedCount;
+      }
       
-      // Extract links from URL and make sure we always return an array
-      return extractLinksFromUrl(url, baseDomain)
-        .then(links => {
-          // Ensure links is an array
-          const linksArray = Array.isArray(links) ? links : [];
-          return { url, links: linksArray };
-        })
-        .catch(error => {
-          logWarning(`Failed to extract links from ${url}: ${error.message}`);
-          return { url, links: [] };
-        });
-    });
-    
-    // Wait for all requests to complete
-    const batchResults = await Promise.allSettled(batchPromises);
-    
-    // Process results and add new URLs to queue
-    for (const result of batchResults) {
-      if (result.status === 'fulfilled') {
-        const { url, links } = result.value;
-        
-        // Make sure links is always an array, even if it's somehow undefined or null
-        const linksArray = Array.isArray(links) ? links : [];
-        
-        const currentDepth = urlDepth.get(url) || 1;
-        const nextDepth = currentDepth + 1;
-        
-        // For each link found
-        for (const link of linksArray) {
-          // If we haven't discovered this URL yet
-          if (!discoveredUrls.has(link)) {
-            // Add to discovered set
-            discoveredUrls.add(link);
-            // Add to queue
-            urlQueue.push(link);
-            // Set depth
-            urlDepth.set(link, nextDepth);
-            
-            // If it's likely a documentation page, increment counter
-            if (isLikelyDocPage(link)) {
-              docPagesCount++;
-            }
+      // Extract links from URL
+      const links = await extractLinksFromUrl(url, baseDomain);
+      const linksArray = Array.isArray(links) ? links : [];
+      
+      // Process each link
+      const nextDepth = depth + 1;
+      for (const link of linksArray) {
+        // If we haven't discovered this URL yet
+        if (!discoveredUrls.has(link)) {
+          // Add to discovered set
+          discoveredUrls.add(link);
+          // Set depth
+          urlDepth.set(link, nextDepth);
+          
+          // If it's likely a documentation page, increment counter
+          if (isLikelyDocPage(link)) {
+            docPagesCount++;
+          }
+          
+          // Add to queue for processing if we haven't reached max depth
+          if (nextDepth <= maxDepth) {
+            // Queue the link for crawling
+            crawlQueue.add(() => processUrl(link));
           }
         }
-      } else if (result.status === 'rejected') {
-        // Log any errors but continue with other URLs
-        logWarning(`A batch crawl operation failed: ${result.reason}`);
       }
+    } catch (error) {
+      logWarning(`Failed to process ${url}: ${error.message}`);
     }
-    
-    // Log progress
-    logInfo(`Crawl progress: ${visitedUrls.size} URLs visited, ${urlQueue.length} URLs in queue`);
   }
+  
+  // Start with the initial URL
+  await crawlQueue.add(() => processUrl(startUrl));
+  
+  // Wait for all crawling to complete
+  await crawlQueue.onIdle();
   
   // Log completion
   crawler.succeed(`Recursive crawl complete. Visited ${formatCount(visitedUrls.size)} URLs, discovered ${formatCount(discoveredUrls.size)} URLs`);
@@ -212,12 +215,11 @@ export async function scrapeContent(startUrl) {
   
   // Get all URLs we've discovered
   const allUrlsArray = Array.from(discoveredUrls);
-  const uniqueUrlsArray = [...new Set(allUrlsArray)];
   
   // Filter URLs to only include likely documentation pages
-  const docUrls = uniqueUrlsArray.filter(url => isLikelyDocPage(url));
+  const docUrls = allUrlsArray.filter(url => isLikelyDocPage(url));
   
-  crawler.succeed(`Found ${formatCount(docUrls.length)} documentation pages across 4 levels`);
+  crawler.succeed(`Found ${formatCount(docUrls.length)} documentation pages across ${maxDepth} levels`);
   logSuccess(`Discovered ${docUrls.length} documentation pages through crawling`);
   
   // Now scrape content from all the discovered URLs
@@ -228,74 +230,90 @@ export async function scrapeContent(startUrl) {
   const pagesToProcess = docUrls.slice(0, maxPages);
   
   const pages = [];
-  let pageCount = 0;
+  pageCount = 0;
+  lastProgressUpdate = 0;
   
-  // Process pages in batches
-  for (let i = 0; i < pagesToProcess.length; i += batchSize) {
-    const batch = pagesToProcess.slice(i, i + batchSize);
-    
-    // Step 1: Scrape content from each page in the batch
-    const batchPromises = batch.map(url => scrapePageContent(url));
-    const batchResults = await Promise.allSettled(batchPromises);
-    
-    // Array to hold successfully scraped page content from this batch
-    const batchPages = [];
-    
-    // Process scraping results
-    batchResults.forEach((result, index) => {
+  // Create a scraping task for each URL
+  const scrapingTasks = pagesToProcess.map(url => async () => {
+    try {
+      const content = await scrapePageContent(url);
       pageCount++;
-      spinner.text = `Scraping content... (${formatCount(pageCount)}/${pagesToProcess.length} pages)`;
       
-      if (result.status === 'fulfilled' && result.value) {
-        batchPages.push(result.value);
-        logSuccess(`Successfully scraped content from ${batch[index]}`);
-      } else {
-        logWarning(`Failed to scrape content from ${batch[index]}`);
+      // Update spinner occasionally
+      if (pageCount - lastProgressUpdate >= progressUpdateSize) {
+        spinner.text = `Scraping content... (${formatCount(pageCount)}/${pagesToProcess.length} pages)`;
+        lastProgressUpdate = pageCount;
       }
-    });
-    
-    // Step 2: Clean each scraped page with AI
-    if (batchPages.length > 0) {
-      spinner.text = `Cleaning batch of ${batchPages.length} pages with GPT-4o-mini...`;
       
-      // Process each page with AI in parallel
-      const cleaningPromises = batchPages.map(page => 
-        cleanMarkdownWithAI(page.content, page.title, page.url)
-          .then(cleanedContent => {
-            // Return a new object with cleaned content
-            return {
-              ...page,
-              content: cleanedContent
-            };
-          })
-      );
-      
-      // Wait for all AI cleaning to complete
-      const cleanedResults = await Promise.allSettled(cleaningPromises);
-      
-      // Process cleaning results
-      cleanedResults.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          // Add the cleaned page to the final pages array
-          pages.push(result.value);
-          logSuccess(`AI cleaned content for ${batchPages[index].url}`);
-        } else {
-          // If AI cleaning failed, add the original page
-          pages.push(batchPages[index]);
-          logWarning(`AI cleaning failed for ${batchPages[index].url}: ${result.reason}`);
-        }
-      });
+      if (content) {
+        logSuccess(`Successfully scraped content from ${url}`);
+        return content;
+      }
+    } catch (error) {
+      logWarning(`Failed to scrape content from ${url}: ${error.message}`);
     }
-  }
+    return null;
+  });
   
-  if (pages.length === 0) {
+  // Add all scraping tasks to the queue
+  const scrapedPages = await Promise.all(
+    scrapingTasks.map(task => scrapeQueue.add(task))
+  );
+  
+  // Filter out null results
+  const validPages = scrapedPages.filter(Boolean);
+  
+  if (validPages.length === 0) {
     spinner.fail('No documentation pages were successfully scraped');
     logError('Failed to scrape any documentation pages');
     return "No documentation content could be scraped.";
   }
   
-  spinner.succeed(`Scraped content from ${formatCount(pages.length)} documentation pages`);
-  logSuccess(`Successfully scraped content from ${pages.length} documentation pages`);
+  spinner.succeed(`Scraped content from ${formatCount(validPages.length)} documentation pages`);
+  logSuccess(`Successfully scraped content from ${validPages.length} documentation pages`);
+  
+  // Clean content with AI if not disabled
+  if (!disableAI) {
+    spinner.text = 'Cleaning content with GPT-4o-mini...';
+    spinner.start();
+    
+    pageCount = 0;
+    lastProgressUpdate = 0;
+    
+    // Create cleaning tasks
+    const cleaningTasks = validPages.map(page => async () => {
+      try {
+        const cleanedContent = await cleanMarkdownWithAI(page.content, page.title, page.url);
+        pageCount++;
+        
+        // Update spinner occasionally
+        if (pageCount - lastProgressUpdate >= progressUpdateSize) {
+          spinner.text = `Cleaning content with GPT-4o-mini... (${formatCount(pageCount)}/${validPages.length} pages)`;
+          lastProgressUpdate = pageCount;
+        }
+        
+        logSuccess(`AI cleaned content for ${page.url}`);
+        return {
+          ...page,
+          content: cleanedContent
+        };
+      } catch (error) {
+        logWarning(`AI cleaning failed for ${page.url}: ${error.message}`);
+        return page; // Return original page if cleaning fails
+      }
+    });
+    
+    // Process cleaning tasks in parallel with controlled concurrency
+    const cleanedPages = await Promise.all(
+      cleaningTasks.map(task => aiQueue.add(task))
+    );
+    
+    spinner.succeed(`Cleaned ${formatCount(cleanedPages.length)} pages with GPT-4o-mini`);
+    pages.push(...cleanedPages);
+  } else {
+    // Skip AI cleaning
+    pages.push(...validPages);
+  }
   
   // Sort pages to try to get a logical order
   spinner.text = 'Organizing content...';
@@ -340,171 +358,172 @@ export async function scrapeContent(startUrl) {
   logSuccess(`Successfully compiled documentation with ${pages.length} pages and ${combinedContent.length} characters`);
   
   return combinedContent;
-  
-  /**
-   * Extract links from a URL that match the base domain
-   * @param {string} url - URL to extract links from
-   * @param {string} baseDomain - Domain to filter links by
-   * @returns {Promise<string[]>} - Array of discovered URLs
-   */
-  async function extractLinksFromUrl(url, baseDomain) {
-    try {
-      // Skip URLs that are likely to be binary files or assets
-      if (url.match(/\.(pdf|zip|jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i)) {
-        return [];
-      }
-      
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        },
-        timeout: 10000, // 10 second timeout
-        validateStatus: function (status) {
-          return status < 400; // Only consider responses with status code < 400 as successful
-        }
-      });
-      
-      // If we got here, the response was successful
-      const contentType = response.headers['content-type'] || '';
-      
-      // Skip binary content
-      if (!contentType.includes('text/html') && 
-          !contentType.includes('application/xhtml+xml') && 
-          !contentType.includes('text/plain')) {
-        return [];
-      }
-      
-      const $ = cheerio.load(response.data);
-      const links = new Set();
-      
-      $('a').each((i, element) => {
-        const href = $(element).attr('href');
-        if (!href) return;
-        
-        // Resolve relative URLs
-        let resolvedUrl;
-        try {
-          resolvedUrl = new URL(href, url).href;
-        } catch (e) {
-          return;
-        }
-        
-        // Check if URL is from the same domain and not a file/resource
-        const urlObj = new URL(resolvedUrl);
-        if (
-          urlObj.hostname === baseDomain && 
-          !resolvedUrl.includes('#') && // Skip anchor links
-          !resolvedUrl.endsWith('.pdf') && // Skip PDFs
-          !resolvedUrl.endsWith('.zip') && // Skip downloads
-          !resolvedUrl.match(/\.(jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i) && // Skip media/assets
-          !resolvedUrl.includes('?') // Skip URLs with query parameters to avoid crawling the same content with different params
-        ) {
-          links.add(resolvedUrl);
-        }
-      });
-      
-      return Array.from(links);
-    } catch (error) {
-      // Just log the error and return an empty array - we'll continue with other URLs
-      logWarning(`Failed to extract links from ${url}: ${error.message}`);
+}
+
+/**
+ * Extract links from a URL that match the base domain
+ * @param {string} url - URL to extract links from
+ * @param {string} baseDomain - Domain to filter links by
+ * @returns {Promise<string[]>} - Array of discovered URLs
+ */
+async function extractLinksFromUrl(url, baseDomain) {
+  try {
+    // Skip URLs that are likely to be binary files or assets
+    if (url.match(/\.(pdf|zip|jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i)) {
       return [];
     }
-  }
-  
-  /**
-   * Scrape content from a single page
-   * @param {string} url - URL to scrape
-   * @returns {Promise<Object|null>} - Page object with title and content, or null if failed
-   */
-  async function scrapePageContent(url) {
-    try {
-      // Skip URLs that are likely to be binary files or assets
-      if (url.match(/\.(pdf|zip|jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i)) {
-        return null;
+    
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      timeout: 10000, // 10 second timeout
+      validateStatus: function (status) {
+        return status < 400; // Only consider responses with status code < 400 as successful
       }
-      
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        },
-        timeout: 15000, // Increased timeout to 15 seconds
-        validateStatus: function (status) {
-          return status < 400; // Only consider responses with status code < 400 as successful
-        }
-      });
-      
-      // If we got here, the response was successful
-      const contentType = response.headers['content-type'] || '';
-      
-      // Skip binary content
-      if (!contentType.includes('text/html') && 
-          !contentType.includes('application/xhtml+xml') && 
-          !contentType.includes('text/plain')) {
-        return null;
-      }
-      
-      const $ = cheerio.load(response.data);
-      const title = $('title').text().trim() || url;
-      
-      // Extract content from main documentation area
-      const contentSelectors = [
-        'main',
-        '#main-content',
-        '.main-content',
-        '.documentation',
-        '.content',
-        'article',
-        '.markdown-body',
-        '#content',
-        '.docs-content',
-        '.docs',
-        '.document',
-        '.doc-content',
-        '.readme',
-        '.page-content',
-        'body'
-      ];
-      
-      let mainContent = null;
-      for (const selector of contentSelectors) {
-        const content = $(selector).html();
-        if (content) {
-          logDebug(`Found content in ${url} using selector: ${selector}`);
-          mainContent = content;
-          break;
-        }
-      }
-      
-      if (!mainContent) {
-        return null;
-      }
-      
-      // Clean up the content before converting to markdown
-      // Remove script and style tags
-      $('script, style, noscript, iframe, svg').remove();
-      
-      // Convert HTML to Markdown
-      const markdown = nhm.translate(mainContent);
-      
-      // Skip pages with very little content (likely not documentation)
-      if (markdown.length < 100) {
-        return null;
-      }
-      
-      // Format initial content with title and source
-      const formattedContent = `# ${title}\n\nSource: ${url}\n\n${markdown}`;
-      
-      return {
-        url: url,
-        title: title,
-        content: formattedContent
-      };
-    } catch (error) {
-      // Just return null - we'll continue with other URLs
-      return null;
+    });
+    
+    // If we got here, the response was successful
+    const contentType = response.headers['content-type'] || '';
+    
+    // Skip binary content
+    if (!contentType.includes('text/html') && 
+        !contentType.includes('application/xhtml+xml') && 
+        !contentType.includes('text/plain')) {
+      return [];
     }
+    
+    const $ = cheerio.load(response.data);
+    const links = new Set();
+    
+    $('a').each((i, element) => {
+      const href = $(element).attr('href');
+      if (!href) return;
+      
+      // Resolve relative URLs
+      let resolvedUrl;
+      try {
+        resolvedUrl = new URL(href, url).href;
+      } catch (e) {
+        return;
+      }
+      
+      // Check if URL is from the same domain and not a file/resource
+      const urlObj = new URL(resolvedUrl);
+      if (
+        urlObj.hostname === baseDomain && 
+        !resolvedUrl.includes('#') && // Skip anchor links
+        !resolvedUrl.endsWith('.pdf') && // Skip PDFs
+        !resolvedUrl.endsWith('.zip') && // Skip downloads
+        !resolvedUrl.match(/\.(jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i) && // Skip media/assets
+        !resolvedUrl.includes('?') // Skip URLs with query parameters to avoid crawling the same content with different params
+      ) {
+        links.add(resolvedUrl);
+      }
+    });
+    
+    return Array.from(links);
+  } catch (error) {
+    // Just log the error and return an empty array - we'll continue with other URLs
+    logWarning(`Failed to extract links from ${url}: ${error.message}`);
+    return [];
   }
 }
+
+/**
+ * Scrape content from a single page
+ * @param {string} url - URL to scrape
+ * @returns {Promise<Object|null>} - Page object with title and content, or null if failed
+ */
+async function scrapePageContent(url) {
+  try {
+    // Skip URLs that are likely to be binary files or assets
+    if (url.match(/\.(pdf|zip|jpg|jpeg|png|gif|svg|css|js|ico|woff|woff2|ttf|eot)$/i)) {
+      return null;
+    }
+    
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      timeout: 15000, // Increased timeout to 15 seconds
+      validateStatus: function (status) {
+        return status < 400; // Only consider responses with status code < 400 as successful
+      }
+    });
+    
+    // If we got here, the response was successful
+    const contentType = response.headers['content-type'] || '';
+    
+    // Skip binary content
+    if (!contentType.includes('text/html') && 
+        !contentType.includes('application/xhtml+xml') && 
+        !contentType.includes('text/plain')) {
+      return null;
+    }
+    
+    const $ = cheerio.load(response.data);
+    const title = $('title').text().trim() || url;
+    
+    // Extract content from main documentation area
+    const contentSelectors = [
+      'main',
+      '#main-content',
+      '.main-content',
+      '.documentation',
+      '.content',
+      'article',
+      '.markdown-body',
+      '#content',
+      '.docs-content',
+      '.docs',
+      '.document',
+      '.doc-content',
+      '.readme',
+      '.page-content',
+      'body'
+    ];
+    
+    let mainContent = null;
+    for (const selector of contentSelectors) {
+      const content = $(selector).html();
+      if (content) {
+        logDebug(`Found content in ${url} using selector: ${selector}`);
+        mainContent = content;
+        break;
+      }
+    }
+    
+    if (!mainContent) {
+      return null;
+    }
+    
+    // Clean up the content before converting to markdown
+    // Remove script and style tags
+    $('script, style, noscript, iframe, svg').remove();
+    
+    // Convert HTML to Markdown
+    const markdown = nhm.translate(mainContent);
+    
+    // Skip pages with very little content (likely not documentation)
+    if (markdown.length < 100) {
+      return null;
+    }
+    
+    // Format initial content with title and source
+    const formattedContent = `# ${title}\n\nSource: ${url}\n\n${markdown}`;
+    
+    return {
+      url: url,
+      title: title,
+      content: formattedContent
+    };
+  } catch (error) {
+    // Just return null - we'll continue with other URLs
+    return null;
+  }
+}
+
 /**
  * Determine if a URL is likely to be a documentation page
  * @param {string} url - URL to check

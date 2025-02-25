@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { fileURLToPath } from 'url';
+import { Command } from 'commander';
 
 import { searchForDocumentation } from './search.js';
 import { scrapeContent } from './scraper.js';
@@ -32,8 +33,11 @@ import {
  * Main function to add documentation for a project
  * @param {string} projectName - Name of the project to document
  * @param {string} [directUrl] - Optional direct URL to documentation
+ * @param {Object} [options] - Additional options
+ * @param {boolean} [options.disableAI] - Whether to disable AI cleaning
+ * @param {number} [options.concurrency] - Number of concurrent operations
  */
-export async function addDocumentation(projectName, directUrl) {
+export async function addDocumentation(projectName, directUrl, options = {}) {
   try {
     // Display welcome header
     displayHeader();
@@ -103,8 +107,13 @@ export async function addDocumentation(projectName, directUrl) {
     
     // Start scraping process
     try {
+      // Pass options to the scraper
       // Scraping functionality is handled in scraper.js with its own spinner
-      const content = await scrapeContent(documentationUrl);
+      const content = await scrapeContent(documentationUrl, options);
+      
+      if (options.disableAI) {
+        logInfo('AI cleaning was disabled for this scrape');
+      }
       
       // Create output directory if it doesn't exist
       try {
