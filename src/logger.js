@@ -1,18 +1,14 @@
 import winston from 'winston';
 import chalk from 'chalk';
 import path from 'path';
-import fs from 'fs/promises';
+import fs from 'fs';
 
-// Ensure logs directory exists
-const ensureLogsDir = async () => {
-  try {
-    await fs.mkdir('logs', { recursive: true });
-  } catch (error) {
-    console.error('Failed to create logs directory:', error.message);
-  }
-};
-
-ensureLogsDir();
+// Ensure logs directory exists synchronously to avoid startup delays
+try {
+  fs.mkdirSync('logs', { recursive: true });
+} catch (error) {
+  console.error('Failed to create logs directory:', error.message);
+}
 
 // Create the logger
 const logger = winston.createLogger({
