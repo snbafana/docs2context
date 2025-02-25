@@ -1,6 +1,6 @@
 # docs2context COMING SOON
 
-docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration.
+docs2context is a CLI tool that automates documentation scraping, cleaning, and aggregation. It intelligently searches for project documentation, crawls through related pages, and compiles everything into a single comprehensive markdown file optimized for context integration. **This tool is perfect for pair programming with an AI. **
 
 ## Installation
 
@@ -37,29 +37,13 @@ docs2context express --concurrency 20
 # Get help
 docs2context --help
 ```
+## Future Plans
 
-## Features
+- Implement chunking, embeddings, and keyword/similarity search over documents as an agent tool.
+- Implement MCP to allow for any agent to interact and understand documentation in seconds
+- Implement multiple different model providers besides OAI
+- Allow cursor to load docs with this tool through function calling / agentic behavior
 
-- **Intelligent Documentation Search**: Utilizes DuckDuckGo to find the most relevant documentation for any project
-- **Interactive Selection**: Lets you choose the correct documentation source before proceeding
-- **Advanced Multi-Level Crawling**: 
-  - Recursively crawls up to 4 levels deep on the documentation website
-  - Intelligently follows only relevant documentation links
-  - Avoids duplicates and non-documentation content
-- **Parallel Processing Architecture**:
-  - Processes multiple pages concurrently for maximum efficiency
-  - Configurable concurrency levels (--concurrency option)
-  - Optimized to avoid overwhelming target servers
-- **AI-Powered Content Cleaning**:
-  - Uses GPT-4o-mini to enhance documentation quality
-  - Removes navigation elements, ads, and irrelevant content
-  - Fixes formatting issues and improves readability
-  - Can be disabled for faster processing (--disable-ai option)
-- **Complete Documentation Package**:
-  - Automatically generates a table of contents
-  - Organizes content in logical order (introductory content first)
-  - Preserves all code examples and technical information
-  - Delivers a single markdown file ready for use
 
 ## Advanced Options
 
